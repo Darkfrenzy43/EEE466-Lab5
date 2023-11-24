@@ -18,6 +18,9 @@ import nacl.public as asym
 # For syn encryption
 import nacl.secret as sym
 
+# For hashing
+import nacl.hash
+
 """
 
     NOTES:
@@ -51,6 +54,9 @@ class SecureTCPFileTransfer(CommunicationInterface):
         self.client_addr = None;
         self.server_addr = None;
 
+        # Attribute for timeouts
+        self.timeout_time = 3;
+
 
         # Attributes needed to establish the asymmetric box between client and server
         self.private_key = None;
@@ -60,6 +66,9 @@ class SecureTCPFileTransfer(CommunicationInterface):
         # Attributes needed to establish the symmetric box between client and server (using asym_box)
         self.sym_key = None;
         self.sym_box = None;
+
+        # Attribute to compute hashes
+        self.hasher = nacl.hash.sha256;
 
 
 
@@ -237,16 +246,33 @@ class SecureTCPFileTransfer(CommunicationInterface):
             return;
 
         # Open 'utf-8' file to read with with(), specifying the encoding [ref Notes 3]...
+        send_hash = None;
         with open(file_path, encoding='utf-8') as open_file:
 
             # Read the file contents into bytes (.read() returns a string, we convert to bytes)
             file_data = bytes(open_file.read(), 'utf-8');
 
+            # Quickly compute the sending data's hash
+            send_hash = self.hasher(file_data);
+
             # Send the data with encryption
-            self.slice_and_send(sending_socket, file_data, use_sym_encrypt = True);
+            self.slice_and_send(sending_socket, file_data, use_sym_encrypt=True);
+
+        # Waiting to receive verifying hash. Verify if hash was correct. Notify client if server.
+        print(f"{self.device_type} COMM STATUS: Confirming with sender if received correct file hash....");
+        recv_hash = self.recv_and_parse(sending_socket, use_sym_encrypt = True);
+        if recv_hash == send_hash:
+            print(f"{self.device_type} COMM STATUS: Confirmed have matching file hash with sending device.");
+            if self.device_type == DeviceTypes.SECTCPSERVER:
+                self.slice_and_send(sending_socket, b'GOOD HASH', use_sym_encrypt = True);
+        else:
+            print(f"{self.device_type} COMM ERROR: Sending device does not have matching hash.");
+            if self.device_type == DeviceTypes.SECTCPSERVER:
+                self.slice_and_send(sending_socket, b'BAD HASH', use_sym_encrypt = True);
 
         # Print status
         print(f"{self.device_type} COMM STATUS: File <{file_name}> finished sending.")
+
 
     def receive_file(self, file_path):
         """
@@ -281,12 +307,27 @@ class SecureTCPFileTransfer(CommunicationInterface):
         with open(file_path, 'w', encoding='utf-8') as open_file:
 
             # Receiving the data from the sender with encryption
-            recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt = True).decode();
+            recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt = True);
 
-            # Write received data to the file (wow python makes this easy)
-            open_file.write(recv_data);
+            # Otherwise, write received data decoded to the file (wow python makes this easy)
+            open_file.write(recv_data.decode());
 
+        # Compute hash and send back
+        hashed_msg = self.hasher(recv_data);
+        self.slice_and_send(receiving_socket, hashed_msg, use_sym_encrypt = True);
+        print(f"{self.device_type} COMM STATUS: Sending back computed hash of received file.");
+
+        # If the client, wait from server if they got the good hash
+        if self.device_type == DeviceTypes.SECTCPCLIENT:
+            recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt = True);
+            if recv_data == b'GOOD HASH':
+                print(f"{self.device_type} COMM STATUS: Server confirmed they received correct hash.");
+            elif recv_data == b'BAD HASH':
+                print(f"{self.device_type} COMM ERROR: SERVER RECEIVED INCORRECT FILE HASH.");
+
+        # Final print message.
         print(f"{self.device_type} COMM STATUS: File <{file_name}> fully received.")
+
 
     def send_command(self, command):
         """
@@ -311,8 +352,9 @@ class SecureTCPFileTransfer(CommunicationInterface):
         # Convert msg into utf-8 bytes
         send_data = bytes(command, 'utf-8');
 
-        # Send message to the client (slice up into 1028 byte msgs if needed) with encryption
+        # Send message to the client (slice up into 1028 byte msgs if needed) with encryption. Handle timeout.
         self.slice_and_send(sending_socket, send_data, use_sym_encrypt = True);
+
 
     def receive_command(self):
         """
@@ -368,6 +410,8 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
     # --------- Making my own Non-API functions --------
 
+
+
     def slice_and_send(self, in_socket, in_data, use_sym_encrypt = False):
         """ Refer to Notes 1.
         Function slices up message in 1028 byte groupings as needed. The sending device then sends
@@ -386,8 +430,11 @@ class SecureTCPFileTransfer(CommunicationInterface):
         bytes_len = len(in_data);
         slice_num = math.ceil(bytes_len / 900)
 
-        # Send the slice number (made possible by converting to string, then bytes)
-        in_socket.send(bytes(str(slice_num), 'utf-8'));
+        # Send the slice number, use encryption if set
+        if use_sym_encrypt:
+            in_socket.send(self.sym_box.encrypt(bytes(str(slice_num), 'utf-8')));
+        else:
+            in_socket.send(bytes(str(slice_num), 'utf-8'));
 
         # Wait for acknowledgement first before proceeding (refer Notes 2)
         if in_socket.recv(3) == b'ACK': pass;
@@ -410,17 +457,15 @@ class SecureTCPFileTransfer(CommunicationInterface):
                 end_ind = (i + 1) * 900;
                 slice_bytes = in_data[start_ind: end_ind]
 
-
             # If argument set, use encryption
             if use_sym_encrypt:
 
-                # Encrypt the slice, find its size
+                # Encrypt the slice, print status if using encryption
                 slice_bytes = self.sym_box.encrypt(slice_bytes);
-                # Print status if using encryption
+
                 print(f"{self.device_type} COMM ENCRYPTED STATUS: Slice {i} encrypted and transmitted.");
 
-
-            # Send the slice of bytes (sounds like a delicious dish lol)
+            # Send the slice of bytes.
             in_socket.send(slice_bytes);
 
 
@@ -433,7 +478,7 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
 
         Args:
-            <in_socket : socket> : A TCP socket object to receive the data through
+            <in_socket : socket> : A TCP socket object to receive the data through.
             <use_sym_encrypt : bool> : A flag that when set, will use the symmetric box for encryption.
             Returns: The reconstructed stream of bytes received in slices from the sender.
         """
@@ -442,8 +487,11 @@ class SecureTCPFileTransfer(CommunicationInterface):
         recv_data = b'';
 
         # Receive the number of slices from sender (receive as bytes, convert to str, then int).
-        # Shouldn't be more than 5 bytes lol
-        slice_num = int(in_socket.recv(5).decode())
+        # Shouldn't be more than 5 bytes lol.
+        if use_sym_encrypt:
+            slice_num = int(self.sym_box.decrypt(in_socket.recv(1028)).decode());
+        else:
+            slice_num = int(in_socket.recv(1028).decode());
 
         # Send acknowledgement that number received (refer to Notes 2)
         in_socket.send(b'ACK');
@@ -457,25 +505,31 @@ class SecureTCPFileTransfer(CommunicationInterface):
             # If symmetric encryption was used, decrypt it.
             if use_sym_encrypt:
 
-                # Handle case if could not decrypt a slice
+                # Handle case if could not decrypt a slice (idk maaan. Let's just hope this never happens
+                # because it would cause the entire conversation to hang. And honestly, I'm too busy to
+                # implement all the use cases to ensure that this gets properly handled).
                 try:
                     in_data = self.sym_box.decrypt(in_data);
                 except nacl.exceptions.CryptoError:
                     print(f"{self.device_type} DECRYPT ERROR: Failed to decrypt slice {i}. Aborting receiving.");
+
+                    # According to instructions, if the server, close the connection
+                    if self.device_type == DeviceTypes.SECTCPSERVER:
+                        self.close_connection();
+
                     break;
 
                 # Print status if using encryption
                 print(f"{self.device_type} COMM DECRYPT STATUS: Slice {i} received and decrypted.");
 
-
             # Add to the total recv_data
             recv_data += in_data;
 
-
         return recv_data;
 
+
     def verify_sender(self, sending_socket, ack_format):
-        """ Refer to Notes 4.
+        """ Refer to Notes 4. Implemented with encryption.
         Function verifies if the sending machine has a valid connection working. Next,
         verifies if the receiving machine is expecting the same data format that is to be sent.
 
@@ -494,14 +548,14 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
         # Second, send the <ack_format> to the receiving device and wait for an
         # acknowledgement that the data format that will be sent is what they expect to receive
-        sending_socket.send(ack_format);
-        if sending_socket.recv(10) != b'ACK':
+        sending_socket.send(self.sym_box.encrypt(ack_format));
+        if self.sym_box.decrypt(sending_socket.recv(1028)) != b'ACK':
             self.error(f"No data sent - receiving device expecting to receive different data format. "
                        f"Check data format being sent. This ack_format = {ack_format}");
             return 1;
 
     def verify_receiver(self, receiving_socket, ack_format):
-        """ Refer to Notes 4.
+        """ Refer to Notes 4. Implemented with encryption.
         Function verifies if the receiving machine has a valid connection working. Next,
         verifies if the sending machine is sending the same data that this machine is receiving.
 
@@ -520,10 +574,10 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
         # Second, ensure we are receiving the expected ack_format msg from the sender.
         # Send ACK back if correct. If anything else received, throw error and close connection.
-        if receiving_socket.recv(10) == ack_format:
-            receiving_socket.send(b'ACK');
+        if self.sym_box.decrypt(receiving_socket.recv(1028)) == ack_format:
+            receiving_socket.send(self.sym_box.encrypt(b'ACK'));
         else:
-            receiving_socket.send(b'ERROR');
+            receiving_socket.send(self.sym_box.encrypt(b'ERROR'));
             self.error(f"No data received - sender is detected sending data in an unexpected format. "
                        f"Verify data format expect to receive. This ack_format = {ack_format}")
             return 1;

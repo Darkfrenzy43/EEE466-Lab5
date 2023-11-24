@@ -114,7 +114,7 @@ class FTClient(object):
         # Create the path variable for clarity
         client_file_path = "Client\\Receive\\" + in_file_name;
 
-        # Receive the requested file and place in Client\Receive\ directory
+        # Receive the requested file and place in Client\Receive\ directory.
         self.comm_inf.receive_file(client_file_path);
 
         # Verify here if client received the file (refer to Notes 1)
