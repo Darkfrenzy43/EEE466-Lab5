@@ -2,6 +2,9 @@
 import math
 import os
 import socket
+
+import nacl.exceptions
+
 from EEE466Baseline.CommunicationInterface import CommunicationInterface
 
 from constants_file import DeviceTypes
@@ -19,7 +22,8 @@ import nacl.secret as sym
 
     NOTES:
     
-        1. 
+        1. Okay cool. So we're going to make the slices of size 900 now - this is because on average 
+        the size of the encrypted bits of these slices are of size 940, just shy of our buffer limit 1024 bytes. 
         
     Status:
     
@@ -39,19 +43,6 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
         NOTE: class objects default to Device Type SECTCPCLIENT upon initialization.
 
-        Class Attributes:
-            <device_type> : Tracks what device the instantiated communication object is acting as (ie. client, server).
-                DEFAULTED TO DeviceTypes.SECTCPCLIENT UPON INSTANTIATION.
-            <initial_socket : socket> : Attribute used by both server and client.
-                A client uses it to connect to the server and for all its data transmission purposes.
-                A server uses it only once when first creating the socket object. Once a connection is received,
-                server objects then uses the socket object (returned by socket.accept()) stored in self.server_socket.
-            <server_socket : socket> : Attribute only used by server - stores the returned socket object
-                by socket.accept() which the server uses for data transmission.
-            <client_addr : tuple> : Attribute only used by server - stores the TCP address of the client
-                device connected to the server.
-            <server_addr : tuple> : Attribute used by both server and client - stores the TCP address of the server
-            todo: add the key attributes
         """
 
         self.device_type = DeviceTypes.SECTCPCLIENT;  # Setting the device type - default to Sec TCP client
@@ -60,8 +51,6 @@ class SecureTCPFileTransfer(CommunicationInterface):
         self.client_addr = None;
         self.server_addr = None;
 
-        #todo note:
-        #   We are supposed to use the assymetric box first to send over the shit needed to establish a secret box
 
         # Attributes needed to establish the asymmetric box between client and server
         self.private_key = None;
@@ -73,13 +62,6 @@ class SecureTCPFileTransfer(CommunicationInterface):
         self.sym_box = None;
 
 
-    # Some example methods for key exchange.
-    def send_public_key(self, msg):
-        pass
-
-
-    def receive_public_key(self):
-        pass
 
     def initialize_server(self, source_port):
         """
@@ -100,11 +82,13 @@ class SecureTCPFileTransfer(CommunicationInterface):
         # Generate the server's public and private key
         self.private_key = asym.PrivateKey.generate();
         self.public_key = self.private_key.public_key;
+        print(f"{self.device_type} STATUS: Server has generated private and public key.")
 
         # Generate the symmetric key on the server side and the symmetric box
         # for any tcp conversations (since assume server has valid cert)
         self.sym_key = utils.random(sym.SecretBox.KEY_SIZE);
         self.sym_box = sym.SecretBox(self.sym_key);
+        print(f"{self.device_type} STATUS: Server has created symmetric box.")
 
         # Call socket(), bind(), and listen() methods for server TCP connections
         self.initial_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM);
@@ -132,7 +116,7 @@ class SecureTCPFileTransfer(CommunicationInterface):
         self.server_socket, self.client_addr = self.initial_socket.accept();
 
         # Print status
-        print(f"{self.device_type} COMM STATUS: Server received BROWN connection from client at {self.client_addr}.");
+        print(f"{self.device_type} COMM STATUS: Server received connection from client at {self.client_addr}.");
 
         # Get secret box for server to conduct encrypted communications
         self.get_sym_box();
@@ -195,12 +179,13 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
             # Create asym box
             self.asym_box = asym.Box(self.private_key, server_pub_key);
-            print(f"{self.device_type} COMM STATUS: Asymmetric box created.");
+            print(f"{self.device_type} STATUS: Asymmetric box created.");
 
             # Receive the symmetric key (already in bytes) from server and create symmetric box
             self.sym_key = self.asym_box.decrypt(self.recv_and_parse(self.initial_socket));
             self.sym_box = sym.SecretBox(self.sym_key);
-            print(f"{self.device_type} COMM STATUS: Created symmetric box on client side.");
+            print(f"{self.device_type} COMM STATUS: Received symmetric key from server.");
+            print(f"{self.device_type} STATUS: Created symmetric box on client side.");
 
 
         # Actions if current device is server
@@ -257,8 +242,8 @@ class SecureTCPFileTransfer(CommunicationInterface):
             # Read the file contents into bytes (.read() returns a string, we convert to bytes)
             file_data = bytes(open_file.read(), 'utf-8');
 
-            # Send the data
-            self.slice_and_send(sending_socket, file_data);
+            # Send the data with encryption
+            self.slice_and_send(sending_socket, file_data, use_sym_encrypt = True);
 
         # Print status
         print(f"{self.device_type} COMM STATUS: File <{file_name}> finished sending.")
@@ -295,8 +280,8 @@ class SecureTCPFileTransfer(CommunicationInterface):
         # Open the file to write the received file info. If none exists, create one at path file_path
         with open(file_path, 'w', encoding='utf-8') as open_file:
 
-            # Receiving the data from the sender
-            recv_data = self.recv_and_parse(receiving_socket).decode();
+            # Receiving the data from the sender with encryption
+            recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt = True).decode();
 
             # Write received data to the file (wow python makes this easy)
             open_file.write(recv_data);
@@ -326,8 +311,8 @@ class SecureTCPFileTransfer(CommunicationInterface):
         # Convert msg into utf-8 bytes
         send_data = bytes(command, 'utf-8');
 
-        # Send message to the client (slice up into 1028 byte msgs if needed)
-        self.slice_and_send(sending_socket, send_data);
+        # Send message to the client (slice up into 1028 byte msgs if needed) with encryption
+        self.slice_and_send(sending_socket, send_data, use_sym_encrypt = True);
 
     def receive_command(self):
         """
@@ -347,11 +332,12 @@ class SecureTCPFileTransfer(CommunicationInterface):
         if self.verify_receiver(receiving_socket, b'COMM ACK'):
             return;
 
-        # Receive the data bytes from the server
-        recv_msg = self.recv_and_parse(receiving_socket);
+        # Receive the data bytes from the server with encryption
+        recv_msg = self.recv_and_parse(receiving_socket, use_sym_encrypt = True);
 
         # Decode and return received command
         return recv_msg.decode();
+
 
     def close_connection(self):
         """
@@ -382,20 +368,23 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
     # --------- Making my own Non-API functions --------
 
-    def slice_and_send(self, in_socket, in_data):
+    def slice_and_send(self, in_socket, in_data, use_sym_encrypt = False):
         """ Refer to Notes 1.
         Function slices up message in 1028 byte groupings as needed. The sending device then sends
         the separate messages in order to the device on the other side of the TCP connection.
 
+        Includes an option to use symmetric encryption once a symmetric box is established.
+
         Args:
              <in_socket : socket > : A TCP socket object through which the message is to be sent.
              <in_data : bytes> : The data which is to be sent to the other device in the TCP connection.
+             <use_sym_encrypt : bool> : A flag that when set, will use the symmetric box for encryption.
              Returns: nothing
         """
 
         # Find how many slices of 1028 bytes we are sending
         bytes_len = len(in_data);
-        slice_num = math.ceil(bytes_len / 1028)
+        slice_num = math.ceil(bytes_len / 900)
 
         # Send the slice number (made possible by converting to string, then bytes)
         in_socket.send(bytes(str(slice_num), 'utf-8'));
@@ -411,26 +400,41 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
                 # possibility of exceeding in_data's indices, so sending
                 # last slice like this for good practice
-                start_ind = i * 1028;
+                start_ind = i * 900;
                 slice_bytes = in_data[start_ind:];
 
             # Otherwise, compute start and end indices for data slices
             else:
 
-                start_ind = i * 1028;
-                end_ind = (i + 1) * 1028;
+                start_ind = i * 900;
+                end_ind = (i + 1) * 900;
                 slice_bytes = in_data[start_ind: end_ind]
+
+
+            # If argument set, use encryption
+            if use_sym_encrypt:
+
+                # Encrypt the slice, find its size
+                slice_bytes = self.sym_box.encrypt(slice_bytes);
+                # Print status if using encryption
+                print(f"{self.device_type} COMM ENCRYPTED STATUS: Slice {i} encrypted and transmitted.");
+
 
             # Send the slice of bytes (sounds like a delicious dish lol)
             in_socket.send(slice_bytes);
 
-    def recv_and_parse(self, in_socket):
+
+    def recv_and_parse(self, in_socket, use_sym_encrypt = False):
         """ Refer to Notes 1.
         Function receives data slices of max size 1028 bytes from sender, and reconstructs
         the original message accordingly.
 
+        Includes an option to use symmetric encryption once a symmetric box is established.
+
+
         Args:
             <in_socket : socket> : A TCP socket object to receive the data through
+            <use_sym_encrypt : bool> : A flag that when set, will use the symmetric box for encryption.
             Returns: The reconstructed stream of bytes received in slices from the sender.
         """
 
@@ -447,7 +451,26 @@ class SecureTCPFileTransfer(CommunicationInterface):
         # Next, call recv() slice_num number of times and receive the
         # slices and reconstruct bytes through concatenation
         for i in range(slice_num):
-            recv_data += in_socket.recv(1028);
+
+            in_data = in_socket.recv(1028);
+
+            # If symmetric encryption was used, decrypt it.
+            if use_sym_encrypt:
+
+                # Handle case if could not decrypt a slice
+                try:
+                    in_data = self.sym_box.decrypt(in_data);
+                except nacl.exceptions.CryptoError:
+                    print(f"{self.device_type} DECRYPT ERROR: Failed to decrypt slice {i}. Aborting receiving.");
+                    break;
+
+                # Print status if using encryption
+                print(f"{self.device_type} COMM DECRYPT STATUS: Slice {i} received and decrypted.");
+
+
+            # Add to the total recv_data
+            recv_data += in_data;
+
 
         return recv_data;
 

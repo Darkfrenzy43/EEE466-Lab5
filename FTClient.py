@@ -62,6 +62,7 @@ class FTClient(object):
         # Upon initialization, connect client to the server
         self.comm_inf.initialize_client(self.server_address[0], self.server_address[1]);
 
+
         # Client main loop:
         while True:
 
