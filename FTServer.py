@@ -88,7 +88,7 @@ class FTServer(object):
         while True:
 
             # Wait to receive a command from the client
-            print("\nSERVER: Waiting to receive command from client... ", end = "");
+            print("\nSERVER: Waiting to receive command from client... ");
             client_command = self.comm_inf.receive_command();
             print(f" command received: [{client_command}]");
 
