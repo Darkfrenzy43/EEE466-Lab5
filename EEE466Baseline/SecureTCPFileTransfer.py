@@ -272,7 +272,7 @@ class SecureTCPFileTransfer(CommunicationInterface):
 
         # if the client, wait form server if they got a bad hash
         if self.device_type == DeviceTypes.SECTCPCLIENT:
-            recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt= True);
+            recv_data = self.recv_and_parse(sending_socket, use_sym_encrypt= True);
             if recv_data == b'GOOD HASH':
                 print(f"{self.device_type} COMM STATUS: hashes matched")
             if recv_data == b'BAD HASH':
@@ -325,13 +325,13 @@ class SecureTCPFileTransfer(CommunicationInterface):
                 print(f"{self.device_type} COMM STATUS: Confirmed we have matching file hash")
                 open_file.write(recv_data.decode());
                 if self.device_type == DeviceTypes.SECTCPSERVER:
-                    self.slice_and_send(sending_socket, b'GOOD HASH', use_sym_encrypt = True);
+                    self.slice_and_send(receiving_socket, b'GOOD HASH', use_sym_encrypt = True);
                 else:
                     print(f"{self.device_type} COMM STATUS: hashes matched")
             else:
                 print(f"{self.device_type} COMM ERROR: RECEVING DEVICE DOES NOT HAVE MATCHING FILE HASH.")
                 if self.device_type == DeviceTypes.SECTCPSERVER:
-                    self.slice_and_send(sending_socket, b'BAD HASH', use_sym_encrypt= True);
+                    self.slice_and_send(receiving_socket, b'BAD HASH', use_sym_encrypt= True);
                 else:
                     print(f"{self.device_type} COMM ERROR: HASHES DID NOT MATCH, FILE NOT WRITEN")
 
