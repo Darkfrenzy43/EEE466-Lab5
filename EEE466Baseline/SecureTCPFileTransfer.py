@@ -266,10 +266,6 @@ class SecureTCPFileTransfer(CommunicationInterface):
             # Send hash
             self.slice_and_send(sending_socket, send_hash, use_sym_encrypt= True);
 
-        # Waiting to receive verifying hash.
-        print(f"{self.device_type} COMM STATUS: Confirming with receiver if they received correct file hash....");
-        recv_hash = self.recv_and_parse(sending_socket, use_sym_encrypt = True);
-
         # if the client, wait form server if they got a bad hash
         if self.device_type == DeviceTypes.SECTCPCLIENT:
             recv_data = self.recv_and_parse(sending_socket, use_sym_encrypt= True);
@@ -334,19 +330,6 @@ class SecureTCPFileTransfer(CommunicationInterface):
                     self.slice_and_send(receiving_socket, b'BAD HASH', use_sym_encrypt= True);
                 else:
                     print(f"{self.device_type} COMM ERROR: HASHES DID NOT MATCH, FILE NOT WRITEN")
-
-        # Compute hash of received file and send back
-        file_hash = self.hasher(recv_data);
-        self.slice_and_send(receiving_socket, file_hash, use_sym_encrypt = True);
-        print(f"{self.device_type} COMM STATUS: Sent to sending device computed hash of received file.");
-
-        # If the client, wait from server if they got the correct hash
-        if self.device_type == DeviceTypes.SECTCPCLIENT:
-            recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt = True);
-            if recv_data == b'GOOD HASH':
-                print(f"{self.device_type} COMM STATUS: Server confirmed client received correct file hash.");
-            elif recv_data == b'BAD HASH':
-                print(f"{self.device_type} COMM ERROR: SERVER SAYS CLIENT RECEIVED  INCORRECT FILE HASH.");
 
         # Final print message.
         print(f"{self.device_type} COMM STATUS: File <{file_name}> fully received.")
