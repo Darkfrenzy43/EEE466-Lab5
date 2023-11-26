@@ -263,19 +263,20 @@ class SecureTCPFileTransfer(CommunicationInterface):
             # Send the data with encryption
             self.slice_and_send(sending_socket, file_data, use_sym_encrypt = True);
 
+            # Send hash
+            self.slice_and_send(sending_socket, send_hash, use_sym_encrypt= True);
+
         # Waiting to receive verifying hash.
         print(f"{self.device_type} COMM STATUS: Confirming with receiver if they received correct file hash....");
         recv_hash = self.recv_and_parse(sending_socket, use_sym_encrypt = True);
 
-        # Verify if hash was correct. If currently server, notify client of results.
-        if recv_hash == send_hash:
-            print(f"{self.device_type} COMM STATUS: Confirmed we have matching file hash with receiving device.");
-            if self.device_type == DeviceTypes.SECTCPSERVER:
-                self.slice_and_send(sending_socket, b'GOOD HASH', use_sym_encrypt = True);
-        else:
-            print(f"{self.device_type} COMM ERROR: RECEIVING DEVICE DOES NOT HAVE MATCHING FILE HASH.");
-            if self.device_type == DeviceTypes.SECTCPSERVER:
-                self.slice_and_send(sending_socket, b'BAD HASH', use_sym_encrypt = True);
+        # if the client, wait form server if they got a bad hash
+        if self.device_type == DeviceTypes.SECTCPCLIENT:
+            recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt= True);
+            if recv_data == b'GOOD HASH':
+                print(f"{self.device_type} COMM STATUS: hashes matched")
+            if recv_data == b'BAD HASH':
+                print(f"{self.device_type} COMM ERROR: HASHES DID NOT MATCH FILE NOT WRITEN")
 
         # Print status
         print(f"{self.device_type} COMM STATUS: File <{file_name}> finished sending.")
@@ -316,8 +317,23 @@ class SecureTCPFileTransfer(CommunicationInterface):
             # Receiving the data from the sender with encryption
             recv_data = self.recv_and_parse(receiving_socket, use_sym_encrypt = True);
 
-            # Otherwise, write received data decoded to the file
-            open_file.write(recv_data.decode());
+            # Receving the hash from the sender with encryption
+            recv_hash = self.recv_and_parse(receiving_socket, use_sym_encrypt = True);
+
+            # if hashes are the same write data
+            if recv_hash == self.hasher(recv_data):
+                print(f"{self.device_type} COMM STATUS: Confirmed we have matching file hash")
+                open_file.write(recv_data.decode());
+                if self.device_type == DeviceTypes.SECTCPSERVER:
+                    self.slice_and_send(sending_socket, b'GOOD HASH', use_sym_encrypt = True);
+                else:
+                    print(f"{self.device_type} COMM STATUS: hashes matched")
+            else:
+                print(f"{self.device_type} COMM ERROR: RECEVING DEVICE DOES NOT HAVE MATCHING FILE HASH.")
+                if self.device_type == DeviceTypes.SECTCPSERVER:
+                    self.slice_and_send(sending_socket, b'BAD HASH', use_sym_encrypt= True);
+                else:
+                    print(f"{self.device_type} COMM ERROR: HASHES DID NOT MATCH, FILE NOT WRITEN")
 
         # Compute hash of received file and send back
         file_hash = self.hasher(recv_data);
